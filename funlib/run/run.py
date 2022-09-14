@@ -79,6 +79,14 @@ p.add('-l', '--array_limit', required=False, type=int,
            " no limit.",
       default=None)
 
+p.add('--array_start', required=False, type=int,
+      help="Start index to be used for an array job. Default is no array job",
+      default=None)
+
+p.add('--array_end', required=False, type=int,
+      help="End index to be used for an array job. Default is no array job",
+      default=None)
+
 p.add('-lg', '--log_file', required=False,
       help="Name of log file for std out.",
       default=None)
@@ -111,6 +119,8 @@ def run(command,
         job_name="",
         array_size=1,
         array_limit=None,
+        array_start=None,
+        array_end=None,
         log_file=None,
         error_file=None,
         flags=None):
@@ -137,56 +147,68 @@ def run(command,
                     " {} MB with container '{}' in working dir '{}'".format(
                         memory, singularity_image, working_dir))
 
-    if log_file:
-        log = "-o {}".format(log_file)
+    if not batch and array_size <= 1 and array_start is None:
+        log = []
+    elif log_file:
+        log = ["-o", "{}".format(log_file)]
     else:
-        log = "-o %J.log"
+        if array_size > 1 or array_start is not None:
+            log = ["-o", "%J_%I.log"]
+        else:
+            log = ["-o", "%J.log"]
 
-    if error_file:
-        error = " -e {}".format(error_file)
+    if not batch and array_size <= 1 and array_start is None:
+        error = []
+    elif error_file:
+        error = ["-e", "{}".format(error_file)]
     else:
-        error = ""
+        error = []
 
     if not batch:
-        submit_cmd = 'bsub -I -R "affinity[core(1)]"'
-    elif array_size > 1:
-        submit_cmd = 'bsub -R "affinity[core(1)]" ' + log + error
+        submit_cmd = ['bsub', '-I', '-R', 'affinity[core(1)]']
+    elif array_size > 1 or array_start is not None:
+        submit_cmd = ['bsub', '-R', 'affinity[core(1)]']
     else:
-        submit_cmd = 'bsub -K -R "affinity[core(1)]" ' + log + error
+        submit_cmd = ['bsub', '-K', '-R', 'affinity[core(1)]']
+    submit_cmd += log + error
 
     if num_gpus <= 0:
-        use_gpus = ""
+        use_gpus = []
     else:
-        use_gpus = '-gpu "num={}:mps=no"'.format(num_gpus)
+        use_gpus = ['-gpu', 'num={}:mps=no'.format(num_gpus)]
 
     if not host or host == "None":
-        use_host = ""
-        host = ""
+        host = []
     else:
-        use_host = "-m"
+        host = ["-m", host]
 
-    run_command = [submit_cmd]
+    run_command = submit_cmd
 
     if comment and not job_name:
         job_name = comment
 
-    if array_size > 1:
+    if array_size > 1 or array_start is not None:
         if not job_name:
             job_name = 'array_job'
-        job_name += "[1-{}]".format(array_size)
+        if array_size > 1:
+            job_name += "[1-{}]".format(array_size)
+        else:
+            assert array_end is not None, (
+                "array_start and array_end have to be provided together")
+            job_name += "[{}-{}]".format(array_start, array_end)
         if array_limit:
             job_name += "%{}".format(array_limit)
 
     if job_name:
-        run_command += ['-J "{}"'.format(job_name)]
-    run_command += ["-n {}".format(num_cpus)]
-    run_command += [use_gpus]
-    run_command += ['-R "rusage[mem={}]"'.format(memory)]
-    run_command += ["-q {}".format(queue)]
-    run_command += ["{} {}".format(use_host, host)]
+        run_command += ['-J', '{}'.format(job_name)]
+    run_command += ["-n", "{}".format(num_cpus)]
+    run_command += use_gpus
+    run_command += ['-R', 'rusage[mem={}]'.format(memory)]
+    run_command += ["-q", "{}".format(queue)]
+    run_command += host
     if flags:
         run_command.extend(flags)
-    run_command += [command]
+    run_command += command if isinstance(command, list) else [command]
 
     if not execute:
         if not expand:
